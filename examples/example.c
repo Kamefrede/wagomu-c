@@ -1,6 +1,45 @@
 #include "wagomu.h"
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static const char *read_file(const char *path, unsigned int *out_size) {
+  FILE *file = fopen(path, "rb");
+  if (!file)
+    return NULL;
+
+  if (fseek(file, 0, SEEK_END) != 0) {
+    fclose(file);
+    return NULL;
+  }
+
+  long size = ftell(file);
+  if (size < 0) {
+    fclose(file);
+    return NULL;
+  }
+  rewind(file);
+
+  char *buffer = (char *)malloc(size);
+  if (!buffer) {
+    fclose(file);
+    return NULL;
+  }
+
+  unsigned int read = fread(buffer, 1, size, file);
+  fclose(file);
+
+  if (read != (unsigned int)size) {
+    free(buffer);
+    return NULL;
+  }
+
+  if (out_size)
+    *out_size = size;
+
+  return buffer;
+}
 
 int main(int argc, char *argv[]) {
   if (argc < 2) {
@@ -11,9 +50,16 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  printf("%s\n", argv[1]);
+  unsigned int model_size = 0;
+  const char *model = read_file(argv[1], &model_size);
 
-  wagomu_recognizer_t *recognizer = wagomu_recognizer_new(argv[1]);
+  if (model == NULL) {
+    fprintf(stderr, "Could not load model file %s\n", argv[1]);
+
+    return 1;
+  }
+
+  wagomu_recognizer_t *recognizer = wagomu_recognizer_new(model, model_size);
 
   if (wagomu_get_error_message(recognizer) != NULL) {
     fprintf(stderr, "Error loading model: %s\n",

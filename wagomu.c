@@ -69,10 +69,10 @@ typedef struct {
 } wagomu_stroke_t;
 
 struct wagomu_recognizer_s {
-  char *data;
-  wagomu_character_info_t *characters;
-  wagomu_character_group_t *groups;
-  float *strokedata;
+  const char *data;
+  const wagomu_character_info_t *characters;
+  const wagomu_character_group_t *groups;
+  const float *strokedata;
   float *dtw1;
   float *dtw2;
   char *error_msg;
@@ -95,44 +95,6 @@ struct wagomu_recognizer_s {
 /*
  * Helper functions.
  */
-
-// `read_file` reads a file into a heap-allocated buffer.
-static char *read_file(const char *path, unsigned int *out_size) {
-  FILE *file = fopen(path, "rb");
-  if (!file)
-    return NULL;
-
-  if (fseek(file, 0, SEEK_END) != 0) {
-    fclose(file);
-    return NULL;
-  }
-
-  long size = ftell(file);
-  if (size < 0) {
-    fclose(file);
-    return NULL;
-  }
-  rewind(file);
-
-  char *buffer = (char *)malloc(size);
-  if (!buffer) {
-    fclose(file);
-    return NULL;
-  }
-
-  unsigned int read = fread(buffer, 1, size, file);
-  fclose(file);
-
-  if (read != (unsigned int)size) {
-    free(buffer);
-    return NULL;
-  }
-
-  if (out_size)
-    *out_size = size;
-
-  return buffer;
-}
 
 // `stroke_free` frees and resets a `wagomu_stroke_t` dynamic array.
 static void stroke_free(wagomu_stroke_t *stroke) {
@@ -338,17 +300,22 @@ static int char_dist_cmp(const void *a, const void *b) {
 // initialized.
 // Always check `wagomu_get_error_message` to see if there was
 // an error or not.
-wagomu_recognizer_t *wagomu_recognizer_new(const char *path) {
+wagomu_recognizer_t *wagomu_recognizer_new(const char *model_bytes,
+                                           unsigned int model_size) {
   wagomu_recognizer_t *recognizer =
       (wagomu_recognizer_t *)calloc(1, sizeof(wagomu_recognizer_t));
 
-  recognizer->window_size = 3;
-  recognizer->data = read_file(path, NULL);
-
-  if (recognizer->data == NULL) {
-    recognizer->error_msg = "Failed to open file";
+  if (model_bytes == NULL) {
+    recognizer->error_msg = "model bytes cannot be null";
     return recognizer;
   }
+
+  if (model_size < sizeof(unsigned int) * 4) {
+    recognizer->error_msg = "Model file does not contain a header";
+    return recognizer;
+  }
+
+  recognizer->data = model_bytes;
 
   unsigned int *header = (unsigned int *)recognizer->data;
 
@@ -618,9 +585,6 @@ void wagomu_recognizer_reset_stroke(wagomu_recognizer_t *recognizer) {
 // `wagomu_recognizer_destroy` frees the `wagomu_recognizer_t` and it's
 // underlying components.
 void wagomu_recognizer_destroy(wagomu_recognizer_t *recognizer) {
-  if (recognizer->data) {
-    free(recognizer->data);
-  }
   if (recognizer->distm)
     free(recognizer->distm);
   if (recognizer->dtw1)

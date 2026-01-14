@@ -54,11 +54,12 @@ typedef struct {
 typedef struct wagomu_recognizer_s wagomu_recognizer_t;
 
 // `wagomu_recognizer_new` creates a new recognizer and loads the
-// model file from the provided path.
+// model.
 // It will always return a non-null pointer, even in case of an error in
 // initialization.
 // To check if an error occured use `wagomu_get_error_message`.
-wagomu_recognizer_t *wagomu_recognizer_new(const char *path);
+wagomu_recognizer_t *wagomu_recognizer_new(const char *model_bytes,
+                                           unsigned int model_size);
 // `wagomu_get_error_message` returns the latest error that the recognizer
 // encountered or `NULL` in case of no error.
 const char *wagomu_get_error_message(wagomu_recognizer_t *recognizer);
