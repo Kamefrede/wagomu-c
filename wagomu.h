@@ -35,18 +35,12 @@ typedef struct {
   float dist;
 } wagomu_result_t;
 
-// `wagomu_prediction_t` holds an array of predictions.
-// It is the responsibility of the one who holds this struct to free it.
-typedef struct {
-  unsigned int count;
-  wagomu_result_t *results;
-} wagomu_prediction_t;
-
 /**
- * A recognizer tracks a list of strokes, which in turn are a dynamic array of
- * points. Whenever `wagomu_recognizer_start_stroke` is called, a new stroke is
- * appended and all subsequent calls to `wagomu_recognizer_add_stroke_point`
- * will add a point to the latest stroke.
+ * A recognizer tracks strokes, which are a dynamic array of
+ * points with metadata associated with them (where each stroke starts and the
+ * amount of points). Whenever `wagomu_recognizer_start_stroke` is called, a new
+ * stroke is appended and all subsequent calls to
+ * `wagomu_recognizer_add_stroke_point` will add a point to the latest stroke.
  */
 
 // `wagomu_recognizer_s` is an opaque handle to the internal
@@ -73,18 +67,14 @@ void wagomu_recognizer_add_stroke_point(wagomu_recognizer_t *recognizer,
                                         float x, float y);
 // `wagomu_recognize` performs recognition on the accumulated strokes.
 // It returns a struct with up to `max_results` predictions.
-// It is the responsibility of the caller of this function to free the
-// prediction.
-wagomu_prediction_t *wagomu_recognize(wagomu_recognizer_t *recognizer,
-                                      unsigned int max_results);
-// `wagomu_recognizer_reset_stroke` resets the current array of strokes
+unsigned int wagomu_recognize(wagomu_recognizer_t *recognizer,
+                              wagomu_result_t *results,
+                              unsigned int max_results);
+// `wagomu_recognizer_reset` resets the recognizer
 // allowing for a new character to be recognized.
-void wagomu_recognizer_reset_stroke(wagomu_recognizer_t *recognizer);
+void wagomu_recognizer_reset(wagomu_recognizer_t *recognizer);
 // `wagomu_prediction_destroy` frees the prediction struct and the array of
 // results.
-void wagomu_prediction_destroy(wagomu_prediction_t *prediction);
-// `wagomu_recognizer_destroy` frees the recognizer struct and its underlying
-// elements.
 void wagomu_recognizer_destroy(wagomu_recognizer_t *recognizer);
 
 #ifdef __cplusplus

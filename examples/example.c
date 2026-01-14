@@ -1,4 +1,4 @@
-#include "wagomu.h"
+#include "../wagomu.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -87,16 +87,19 @@ int main(int argc, char *argv[]) {
                                        y1 + (y2 - y1) * t);
   }
 
-  wagomu_prediction_t *prediction = wagomu_recognize(recognizer, 5);
+  unsigned int max_results = 5;
+  wagomu_result_t results[5] = {0};
+  unsigned int result_count =
+      wagomu_recognize(recognizer, results, max_results);
 
-  for (unsigned int i = 0; i < prediction->count; ++i) {
-    unsigned int unicode = prediction->results[i].unicode;
-    float dist = prediction->results[i].dist;
+  for (unsigned int i = 0; i < result_count; ++i) {
+    unsigned int unicode = results[i].unicode;
+    float dist = results[i].dist;
 
     printf("  Rank %u: U+%04X (Distance: %f)\n", i + 1, unicode, dist);
   }
 
-  wagomu_recognizer_reset_stroke(recognizer);
+  wagomu_recognizer_reset(recognizer);
 
   wagomu_recognizer_destroy(recognizer);
 
