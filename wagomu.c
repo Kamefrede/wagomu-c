@@ -25,7 +25,6 @@
 #include <float.h>
 #include <math.h>
 #include <stddef.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -63,10 +62,19 @@ typedef struct {
 } wagomu_point_t;
 
 typedef struct {
-  unsigned int size;
-  unsigned int capacity;
+  unsigned int start;
+  unsigned int count;
+} wagomu_stroke_meta_t;
+
+typedef struct {
   wagomu_point_t *points;
-} wagomu_stroke_t;
+  unsigned int points_size;
+  unsigned int points_cap;
+
+  wagomu_stroke_meta_t *meta;
+  unsigned int n_strokes;
+  unsigned int meta_cap;
+} wagomu_strokes_t;
 
 struct wagomu_recognizer_s {
   const char *data;
@@ -77,13 +85,10 @@ struct wagomu_recognizer_s {
   float *dtw2;
   char *error_msg;
   wagomu_result_t *distm;
-  wagomu_stroke_t *strokes;
-  wagomu_stroke_t *proc_strokes;
+  wagomu_strokes_t strokes;
+  wagomu_strokes_t proc_strokes;
   float *features;
 
-  unsigned int n_strokes;
-  unsigned int strokes_cap;
-  unsigned int proc_cap;
   unsigned int features_cap;
   unsigned int n_characters;
   unsigned int n_groups;
@@ -96,51 +101,90 @@ struct wagomu_recognizer_s {
  * Helper functions.
  */
 
-// `stroke_free` frees and resets a `wagomu_stroke_t` dynamic array.
-static void stroke_free(wagomu_stroke_t *stroke) {
-  if (stroke->points)
-    free(stroke->points);
+// `strokes_free` frees and resets a `wagomu_strokes_t`.
+static void strokes_free(wagomu_strokes_t *strokes) {
+  if (strokes->points)
+    free(strokes->points);
+  if (strokes->meta)
+    free(strokes->meta);
 
-  stroke->points = NULL;
-  stroke->size = 0;
-  stroke->capacity = 0;
+  strokes->points = NULL;
+  strokes->points_size = 0;
+  strokes->points_cap = 0;
+  strokes->meta = NULL;
+  strokes->n_strokes = 0;
+  strokes->meta_cap = 0;
 }
 
-// `stroke_push` pushes (and grows) a `wagomu_point_t` into a `wagomu_stroke_t`
-// dynamic array.
-static void stroke_push(wagomu_stroke_t *stroke, wagomu_point_t point) {
-  if (stroke->size == stroke->capacity) {
-    stroke->capacity = (stroke->capacity == 0) ? 8 : stroke->capacity * 2;
-    stroke->points = (wagomu_point_t *)realloc(
-        stroke->points, stroke->capacity * sizeof(wagomu_point_t));
+// `strokes_start_stroke` starts a new stroke in the strokes container.
+static void strokes_start_stroke(wagomu_strokes_t *strokes) {
+  if (strokes->n_strokes == strokes->meta_cap) {
+    strokes->meta_cap = (strokes->meta_cap == 0) ? 4 : strokes->meta_cap * 2;
+    strokes->meta = (wagomu_stroke_meta_t *)realloc(
+        strokes->meta, strokes->meta_cap * sizeof(wagomu_stroke_meta_t));
   }
 
-  stroke->points[stroke->size++] = point;
+  strokes->meta[strokes->n_strokes].start = strokes->points_size;
+  strokes->meta[strokes->n_strokes].count = 0;
+  strokes->n_strokes++;
 }
 
-// `stroke_copy` deep copies (and grows) the source `wagomu_stroke_t` dynamic
-// array into the `wagomu_stroke_t` dynamic array.
-static void stroke_copy(wagomu_stroke_t *destination,
-                        const wagomu_stroke_t *source) {
-  if (source->size == 0) {
+// `strokes_add_point` adds a point to the current stroke.
+static void strokes_add_point(wagomu_strokes_t *strokes, wagomu_point_t point) {
+  if (strokes->n_strokes == 0)
+    return;
+
+  if (strokes->points_size == strokes->points_cap) {
+    strokes->points_cap =
+        (strokes->points_cap == 0) ? 64 : strokes->points_cap * 2;
+    strokes->points = (wagomu_point_t *)realloc(
+        strokes->points, strokes->points_cap * sizeof(wagomu_point_t));
+  }
+
+  strokes->points[strokes->points_size++] = point;
+  strokes->meta[strokes->n_strokes - 1].count++;
+}
+
+// `strokes_reset` resets strokes while retaining capacity.
+static void strokes_reset(wagomu_strokes_t *strokes) {
+  strokes->points_size = 0;
+  strokes->n_strokes = 0;
+}
+
+// `strokes_copy` deep copies source strokes into destination.
+static void strokes_copy(wagomu_strokes_t *dest, const wagomu_strokes_t *src) {
+  if (src->points_size == 0) {
+    dest->points_size = 0;
+    dest->n_strokes = 0;
     return;
   }
 
-  if (destination->capacity < source->size) {
-    if (destination->points)
-      free(destination->points);
-
-    destination->points =
-        (wagomu_point_t *)malloc(source->size * sizeof(wagomu_point_t));
-    destination->capacity = source->size;
+  if (dest->points_cap < src->points_size) {
+    free(dest->points);
+    dest->points =
+        (wagomu_point_t *)malloc(src->points_size * sizeof(wagomu_point_t));
+    dest->points_cap = src->points_size;
   }
 
-  memcpy(destination->points, source->points,
-         source->size * sizeof(wagomu_point_t));
-  destination->size = source->size;
+  if (dest->meta_cap < src->n_strokes) {
+    free(dest->meta);
+    dest->meta = (wagomu_stroke_meta_t *)malloc(src->n_strokes *
+                                                sizeof(wagomu_stroke_meta_t));
+    dest->meta_cap = src->n_strokes;
+  }
+
+  memcpy(dest->points, src->points, src->points_size * sizeof(wagomu_point_t));
+  memcpy(dest->meta, src->meta, src->n_strokes * sizeof(wagomu_stroke_meta_t));
+  dest->points_size = src->points_size;
+  dest->n_strokes = src->n_strokes;
 }
 
-// `dist_sq` returns the euclidean distance between two `wagomu_point_t`.
+// `strokes_total_points` returns total point count.
+static unsigned int strokes_total_points(const wagomu_strokes_t *strokes) {
+  return strokes->points_size;
+}
+
+// `dist_sq` returns the euclidean distance squared between two points.
 static float dist_sq(wagomu_point_t point1, wagomu_point_t point2) {
   return (point1.x - point2.x) * (point1.x - point2.x) +
          (point1.y - point2.y) * (point1.y - point2.y);
@@ -148,24 +192,22 @@ static float dist_sq(wagomu_point_t point1, wagomu_point_t point2) {
 
 // `normalize_strokes` resizes the strokes into a box of size
 // `NORM_SIZE`x`NORM_SIZE` and centers them.
-static void normalize_strokes(wagomu_stroke_t *strokes,
-                              unsigned int n_strokes) {
+static void normalize_strokes(wagomu_strokes_t *strokes) {
+  if (strokes->points_size == 0)
+    return;
+
   float min_x = FLT_MAX, max_x = -FLT_MAX;
   float min_y = FLT_MAX, max_y = -FLT_MAX;
 
-  // Find bounding box.
-  for (unsigned int i = 0; i < n_strokes; ++i) {
-    wagomu_stroke_t *stroke = &strokes[i];
-    for (unsigned int j = 0; j < stroke->size; ++j) {
-      if (stroke->points[j].x < min_x)
-        min_x = stroke->points[j].x;
-      if (stroke->points[j].x > max_x)
-        max_x = stroke->points[j].x;
-      if (stroke->points[j].y < min_y)
-        min_y = stroke->points[j].y;
-      if (stroke->points[j].y > max_y)
-        max_y = stroke->points[j].y;
-    }
+  for (unsigned int i = 0; i < strokes->points_size; ++i) {
+    if (strokes->points[i].x < min_x)
+      min_x = strokes->points[i].x;
+    if (strokes->points[i].x > max_x)
+      max_x = strokes->points[i].x;
+    if (strokes->points[i].y < min_y)
+      min_y = strokes->points[i].y;
+    if (strokes->points[i].y > max_y)
+      max_y = strokes->points[i].y;
   }
 
   float width = max_x - min_x;
@@ -175,8 +217,6 @@ static void normalize_strokes(wagomu_stroke_t *strokes,
   if (height == 0)
     height = 1;
 
-  // Calculate scaling ratios to fit within NORM_SIZE while maintaining aspect
-  // ratio.
   float ratio_w = NORM_SIZE / width;
   float ratio_h = NORM_SIZE / height;
   float ratio = (ratio_w < ratio_h) ? ratio_w : ratio_h;
@@ -186,48 +226,55 @@ static void normalize_strokes(wagomu_stroke_t *strokes,
   float dx = (NORM_SIZE - new_width) / 2.0f;
   float dy = (NORM_SIZE - new_height) / 2.0f;
 
-  // Apply transformation
-  for (unsigned int i = 0; i < n_strokes; ++i) {
-    wagomu_stroke_t *stroke = &strokes[i];
-    for (unsigned int j = 0; j < stroke->size; ++j) {
-      stroke->points[j].x = (stroke->points[j].x - min_x) * ratio + dx;
-      stroke->points[j].y = (stroke->points[j].y - min_y) * ratio + dy;
-    }
+  for (unsigned int i = 0; i < strokes->points_size; ++i) {
+    strokes->points[i].x = (strokes->points[i].x - min_x) * ratio + dx;
+    strokes->points[i].y = (strokes->points[i].y - min_y) * ratio + dy;
   }
 }
 
-// `downsample_strokes` reduces point count based on distance to filter out
-// noise or excessive detail.
-static void downsample_strokes(wagomu_stroke_t *strokes, unsigned int n_strokes,
+// `downsample_strokes` reduces point count based on distance.
+static void downsample_strokes(wagomu_strokes_t *strokes,
                                unsigned int downsample_threshold) {
-  for (unsigned int i = 0; i < n_strokes; ++i) {
-    wagomu_stroke_t *stroke = &strokes[i];
-    if (stroke->size <= 1)
+  if (strokes->points_size == 0)
+    return;
+
+  unsigned int write_idx = 0;
+  float threshold_sq = (float)(downsample_threshold * downsample_threshold);
+
+  for (unsigned int s = 0; s < strokes->n_strokes; ++s) {
+    unsigned int start = strokes->meta[s].start;
+    unsigned int count = strokes->meta[s].count;
+
+    if (count == 0)
       continue;
 
-    unsigned int write_idx = 0;
+    unsigned int new_start = write_idx;
+    unsigned int new_count = 0;
 
-    write_idx++; // Always keep the first point
+    strokes->points[write_idx++] = strokes->points[start];
+    new_count++;
 
-    wagomu_point_t last_original = stroke->points[stroke->size - 1];
+    wagomu_point_t last_original = strokes->points[start + count - 1];
 
-    for (unsigned int j = 1; j < stroke->size; ++j) {
-      wagomu_point_t last_kept = stroke->points[write_idx - 1];
-      if (dist_sq(stroke->points[j], last_kept) >=
-          downsample_threshold * downsample_threshold) {
-        stroke->points[write_idx++] = stroke->points[j];
+    for (unsigned int j = 1; j < count; ++j) {
+      wagomu_point_t last_kept = strokes->points[write_idx - 1];
+      if (dist_sq(strokes->points[start + j], last_kept) >= threshold_sq) {
+        strokes->points[write_idx++] = strokes->points[start + j];
+        new_count++;
       }
     }
 
-    // Ensure the last point is preserved if it's far enough from the last kept
-    // point
-    wagomu_point_t last_kept = stroke->points[write_idx - 1];
-    if (stroke->size > 1 && dist_sq(last_original, last_kept) > 100.0f) {
-      stroke->points[write_idx++] = last_original;
+    wagomu_point_t last_kept = strokes->points[write_idx - 1];
+    if (count > 1 && dist_sq(last_original, last_kept) > 100.0f) {
+      strokes->points[write_idx++] = last_original;
+      new_count++;
     }
 
-    stroke->size = write_idx;
+    strokes->meta[s].start = new_start;
+    strokes->meta[s].count = new_count;
   }
+
+  strokes->points_size = write_idx;
 }
 
 // tbh I don't really know the algorithm to know what this does.
@@ -356,13 +403,6 @@ wagomu_recognizer_t *wagomu_recognizer_new(const char *model_bytes,
   recognizer->dtw2 =
       (float *)malloc(max_n_vectors * recognizer->dimension * sizeof(float));
 
-  recognizer->strokes = NULL;
-  recognizer->n_strokes = 0;
-  recognizer->strokes_cap = 0;
-
-  recognizer->proc_strokes = NULL;
-  recognizer->proc_cap = 0;
-
   recognizer->features = NULL;
   recognizer->features_cap = 0;
 
@@ -376,94 +416,46 @@ const char *wagomu_get_error_message(wagomu_recognizer_t *recognizer) {
 }
 
 // `wagomu_recognizer_start_stroke` starts a new stroke.
-// It will dynamically grow the `strokes` array if it has reached
-// its capacity.
 void wagomu_recognizer_start_stroke(wagomu_recognizer_t *recognizer) {
   if (!recognizer)
     return;
 
-  if (recognizer->n_strokes == recognizer->strokes_cap) {
-    unsigned int old_cap = recognizer->strokes_cap;
-    recognizer->strokes_cap =
-        (recognizer->strokes_cap == 0) ? 4 : recognizer->strokes_cap * 2;
-    recognizer->strokes = (wagomu_stroke_t *)realloc(
-        recognizer->strokes, recognizer->strokes_cap * sizeof(wagomu_stroke_t));
-
-    memset(&recognizer->strokes[old_cap], 0,
-           (recognizer->strokes_cap - old_cap) * sizeof(*recognizer->strokes));
-  }
-
-  recognizer->strokes[recognizer->n_strokes].size = 0;
-  recognizer->n_strokes++;
+  strokes_start_stroke(&recognizer->strokes);
 }
 
-// `wagomu_recognizer_add_stroke_point` appends a point to the
-// latest created stroke.
+// `wagomu_recognizer_add_stroke_point` appends a point to the latest stroke.
 void wagomu_recognizer_add_stroke_point(wagomu_recognizer_t *recognizer,
                                         float x, float y) {
   if (!recognizer)
     return;
 
-  if (recognizer->n_strokes == 0) {
-    return;
-  }
-
   wagomu_point_t point = {x, y};
-  stroke_push(&recognizer->strokes[recognizer->n_strokes - 1], point);
+  strokes_add_point(&recognizer->strokes, point);
 }
 
-// `wagomu_recognize` performs a recognition on the internal
-// `strokes` dynamic array of strokes against the model loaded.
-// Roughly speaking the process is a follows:
-// 1. Do a deep copy of the current `strokes` dynamic array into a new dynamic
-// array.
-// 2. Center the strokes and normalize them to fit in a `NORM_SIZE`x`NORM_SIZE`
-// box.
-// 3. Downsample the amount of points in a stroke to the `downsample_threshold`
-// of the model to prevent excessive detail or noise.
-// 4. Run the Dynamic Time Warping algorith to get the most likely
-// `max_results`.
-// The heap struct returned by the function must be freed by the caller.
+// `wagomu_recognize` performs a recognition on the internal strokes.
 wagomu_prediction_t *wagomu_recognize(wagomu_recognizer_t *recognizer,
                                       unsigned int max_results) {
   if (!recognizer)
     return NULL;
 
-  if (recognizer->n_strokes == 0)
+  if (recognizer->strokes.n_strokes == 0)
     return NULL;
 
-  unsigned int total_points = 0;
-  for (unsigned int i = 0; i < recognizer->n_strokes; ++i)
-    total_points += recognizer->strokes[i].size;
+  unsigned int total_points = strokes_total_points(&recognizer->strokes);
 
   if (total_points < 2)
     return NULL;
 
-  // Prepare processing buffer
-  if (recognizer->proc_cap < recognizer->n_strokes) {
-    unsigned int old_cap = recognizer->proc_cap;
-    recognizer->proc_cap = recognizer->n_strokes;
-    recognizer->proc_strokes = (wagomu_stroke_t *)realloc(
-        recognizer->proc_strokes,
-        recognizer->proc_cap * sizeof(wagomu_stroke_t));
-
-    memset(&recognizer->proc_strokes[old_cap], 0,
-           (recognizer->proc_cap - old_cap) *
-               sizeof(*recognizer->proc_strokes));
-  }
-
-  for (unsigned int i = 0; i < recognizer->n_strokes; ++i) {
-    stroke_copy(&recognizer->proc_strokes[i], &recognizer->strokes[i]);
-  }
+  // Copy strokes to processing buffer
+  strokes_copy(&recognizer->proc_strokes, &recognizer->strokes);
 
   // Pre-process strokes
-  normalize_strokes(recognizer->proc_strokes, recognizer->n_strokes);
-  downsample_strokes(recognizer->proc_strokes, recognizer->n_strokes,
+  normalize_strokes(&recognizer->proc_strokes);
+  downsample_strokes(&recognizer->proc_strokes,
                      recognizer->downsample_threshold);
 
-  total_points = 0;
-  for (unsigned int i = 0; i < recognizer->n_strokes; ++i)
-    total_points += recognizer->proc_strokes[i].size;
+  total_points = strokes_total_points(&recognizer->proc_strokes);
 
   if (total_points < 2)
     return NULL;
@@ -479,14 +471,16 @@ wagomu_prediction_t *wagomu_recognize(wagomu_recognizer_t *recognizer,
 
   // Feature extraction
   unsigned int k = 0;
-  wagomu_point_t *prev, *curr;
-  int first_point = 1;
+  wagomu_point_t *prev = NULL;
 
-  for (unsigned int i = 0; i < recognizer->n_strokes; ++i) {
-    for (unsigned int j = 0; j < recognizer->proc_strokes[i].size; ++j) {
-      curr = &recognizer->proc_strokes[i].points[j];
+  for (unsigned int s = 0; s < recognizer->proc_strokes.n_strokes; ++s) {
+    unsigned int start = recognizer->proc_strokes.meta[s].start;
+    unsigned int count = recognizer->proc_strokes.meta[s].count;
 
-      if (!first_point) {
+    for (unsigned int j = 0; j < count; ++j) {
+      wagomu_point_t *curr = &recognizer->proc_strokes.points[start + j];
+
+      if (prev != NULL) {
         float *c = (float *)curr;
         float *p = (float *)prev;
 
@@ -498,12 +492,10 @@ wagomu_prediction_t *wagomu_recognize(wagomu_recognizer_t *recognizer,
                 fabsf(c[h] - p[h]);
           }
         }
-
         k++;
       }
 
       prev = curr;
-      first_point = 0;
     }
   }
 
@@ -515,18 +507,15 @@ wagomu_prediction_t *wagomu_recognize(wagomu_recognizer_t *recognizer,
   unsigned int char_id = 0;
   unsigned int n_chars = 0;
   float *cursor;
+  unsigned int n_strokes = recognizer->proc_strokes.n_strokes;
 
   for (unsigned int group_id = 0; group_id < recognizer->n_groups; group_id++) {
-    /* Only compare the input with templates which have
-       +- window_size the same number of strokes as the input */
-
     if (recognizer->groups[group_id].n_strokes >
-        (recognizer->n_strokes + recognizer->window_size))
+        (n_strokes + recognizer->window_size))
       break;
 
-    /* Use addition to avoid unsigned underflow: a < b - c  <=>  a + c < b */
     if (recognizer->groups[group_id].n_strokes + recognizer->window_size <
-        recognizer->n_strokes) {
+        n_strokes) {
       char_id += recognizer->groups[group_id].n_chars;
       continue;
     }
@@ -548,7 +537,6 @@ wagomu_prediction_t *wagomu_recognize(wagomu_recognizer_t *recognizer,
     }
   }
 
-  /* sort the results with glibc's quicksort */
   qsort((void *)recognizer->distm, (unsigned int)n_chars,
         sizeof(wagomu_result_t), char_dist_cmp);
 
@@ -568,22 +556,15 @@ wagomu_prediction_t *wagomu_recognize(wagomu_recognizer_t *recognizer,
   return prediction;
 }
 
-// `wagomu_recognizer_reset_stroke` resets the dynamic array of `strokes` back
-// to zero while retaining capacity, to allow for reuse of the array without
-// relocation.
+// `wagomu_recognizer_reset_stroke` resets the strokes back to zero.
 void wagomu_recognizer_reset_stroke(wagomu_recognizer_t *recognizer) {
   if (!recognizer)
     return;
 
-  for (unsigned int i = 0; i < recognizer->n_strokes; ++i) {
-    recognizer->strokes[i].size = 0;
-  }
-
-  recognizer->n_strokes = 0;
+  strokes_reset(&recognizer->strokes);
 }
 
-// `wagomu_recognizer_destroy` frees the `wagomu_recognizer_t` and it's
-// underlying components.
+// `wagomu_recognizer_destroy` frees the `wagomu_recognizer_t`.
 void wagomu_recognizer_destroy(wagomu_recognizer_t *recognizer) {
   if (recognizer->distm)
     free(recognizer->distm);
@@ -592,16 +573,9 @@ void wagomu_recognizer_destroy(wagomu_recognizer_t *recognizer) {
   if (recognizer->dtw2)
     free(recognizer->dtw2);
 
-  if (recognizer->strokes) {
-    for (unsigned int i = 0; i < recognizer->strokes_cap; ++i)
-      stroke_free(&recognizer->strokes[i]);
-    free(recognizer->strokes);
-  }
-  if (recognizer->proc_strokes) {
-    for (unsigned int i = 0; i < recognizer->proc_cap; ++i)
-      stroke_free(&recognizer->proc_strokes[i]);
-    free(recognizer->proc_strokes);
-  }
+  strokes_free(&recognizer->strokes);
+  strokes_free(&recognizer->proc_strokes);
+
   if (recognizer->features)
     free(recognizer->features);
 
