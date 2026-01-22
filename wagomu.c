@@ -529,7 +529,7 @@ unsigned int wagomu_recognize(wagomu_recognizer_t *recognizer,
 
   // Feature extraction
   unsigned int k = 0;
-  wagomu_point_t *prev;
+  wagomu_point_t *prev = NULL;
 
   for (unsigned int s = 0; s < recognizer->proc_strokes.n_strokes; ++s) {
     unsigned int start = recognizer->proc_strokes.meta[s].start;
@@ -539,17 +539,13 @@ unsigned int wagomu_recognize(wagomu_recognizer_t *recognizer,
       wagomu_point_t *curr = &recognizer->proc_strokes.points[start + j];
 
       if (prev) {
-        float *c = (float *)curr;
-        float *p = (float *)prev;
+        recognizer->features[k * recognizer->dimension + 0] = fabsf(curr->x - prev->x);
+        recognizer->features[k * recognizer->dimension + 1] = fabsf(curr->y - prev->y);
 
-        for (unsigned int h = 0; h < recognizer->dimension; ++h) {
-          if (h >= 2) {
-            recognizer->features[k * recognizer->dimension + h] = 0.0f;
-          } else {
-            recognizer->features[k * recognizer->dimension + h] =
-                fabsf(c[h] - p[h]);
-          }
+        for (unsigned int h = 2; h < recognizer->dimension; ++h) {
+          recognizer->features[k * recognizer->dimension + h] = 0.0f;
         }
+
         k++;
       }
 

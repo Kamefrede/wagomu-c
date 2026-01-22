@@ -103,5 +103,7 @@ int main(int argc, char *argv[]) {
 
   wagomu_recognizer_destroy(recognizer);
 
+  free(model);
+
   return 0;
 }
